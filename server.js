@@ -15,23 +15,41 @@ const openai = new OpenAI({
 app.use(cors());
 app.use(express.json());
 
-// Chat endpoint
+// Chat endpoint with streaming
 app.post('/api/chat', async (req, res) => {
   try {
     const { messages } = req.body;
 
-    const completion = await openai.chat.completions.create({
+    // Set headers for SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const stream = await openai.chat.completions.create({
       model: "gpt-4.1",
       messages: messages,
-      temperature: 0.5,
+      stream: true,
     });
 
-    res.json({
-      message: completion.choices[0].message.content,
-    });
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) {
+        console.log(content);
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      }
+    }
+
+    // Send end message
+    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.end();
   } catch (error) {
     console.error('Error:', error);
-    res.status(500).json({ error: 'Something went wrong' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Something went wrong' });
+    } else {
+      res.write(`data: ${JSON.stringify({ error: 'Something went wrong' })}\n\n`);
+      res.end();
+    }
   }
 });
 

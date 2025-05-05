@@ -8,12 +8,12 @@ import {
   Typography,
   CircularProgress
 } from '@mui/material';
-import axios from 'axios';
 
 function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [streamingMessage, setStreamingMessage] = useState('');
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -22,7 +22,7 @@ function App() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, streamingMessage]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -32,21 +32,67 @@ function App() {
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
+    setStreamingMessage('');
 
     try {
-      const response = await axios.post('http://localhost:4000/api/chat', {
-        messages: [...messages, userMessage]
+      const response = await fetch('http://localhost:4000/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [...messages, userMessage]
+        }),
       });
 
-      const assistantMessage = { role: 'assistant', content: response.data.message };
-      setMessages(prev => [...prev, assistantMessage]);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulatedMessage = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.error) {
+                throw new Error(data.error);
+              }
+              
+              if (data.done) {
+                setMessages(prev => [...prev, { 
+                  role: 'assistant', 
+                  content: accumulatedMessage 
+                }]);
+                setStreamingMessage('');
+                setIsLoading(false);
+              } else if (data.content) {
+                accumulatedMessage += data.content;
+                setStreamingMessage(accumulatedMessage);
+              }
+            } catch (parseError) {
+              console.error('Error parsing SSE data:', parseError);
+            }
+          }
+        }
+      }
     } catch (error) {
       console.error('Error:', error);
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: 'Sorry, I encountered an error. Please try again.' 
+        content: `Error: ${error.message || 'Something went wrong. Please try again.'}` 
       }]);
-    } finally {
+      setStreamingMessage('');
       setIsLoading(false);
     }
   };
@@ -90,7 +136,22 @@ function App() {
               <Typography>{message.content}</Typography>
             </Box>
           ))}
-          {isLoading && (
+          {streamingMessage && (
+            <Box
+              sx={{
+                alignSelf: 'flex-start',
+                maxWidth: '70%',
+                bgcolor: 'white',
+                color: 'text.primary',
+                p: 2,
+                borderRadius: 2,
+                boxShadow: 1
+              }}
+            >
+              <Typography>{streamingMessage}</Typography>
+            </Box>
+          )}
+          {isLoading && !streamingMessage && (
             <Box sx={{ alignSelf: 'flex-start', p: 2 }}>
               <CircularProgress size={20} />
             </Box>
